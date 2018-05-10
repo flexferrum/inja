@@ -364,7 +364,6 @@ public:
 	explicit Template(const Parsed::Element& parsed_template): _parsed_template(parsed_template) { }
 };
 
-
 class Renderer {
 public:
 	std::map<Parsed::CallbackSignature, std::function<json(const Parsed::Arguments&, const json&)>> map_callbacks;
@@ -609,10 +608,56 @@ public:
 	}
 };
 
+class TemplatesProvider {
+public:
+    virtual ~TemplatesProvider() {}
+
+    virtual std::string read_file(const std::string& file_path, const std::string& root_path) = 0;
+    virtual std::shared_ptr<std::istream> get_file_stream(const std::string& filepath, const std::string& root_path) = 0;
+    static std::shared_ptr<TemplatesProvider> get_default_provider();
+};
+
+using TemplatesProviderPtr = std::shared_ptr<TemplatesProvider>;
+
+class FilesystemTemplatesProvider : public TemplatesProvider {
+    std::string root_;
+    
+public:
+    FilesystemTemplatesProvider(std::string default_root = "./") : root_(std::move(default_root)) {}
+    
+    std::string read_file(const std::string& file_path, const std::string& root_path) override {
+		std::ifstream file(get_path_to_file(file_path, root_path));
+		std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+		return text;
+    }
+    
+    std::shared_ptr<std::istream> get_file_stream(const std::string& file_path, const std::string& root_path) override {
+        std::shared_ptr<std::istream> result(new std::ifstream(get_path_to_file(file_path, root_path)), [](std::istream* is) {delete static_cast<std::ifstream*>(is);});
+
+		if (!result->good())
+		  return std::shared_ptr<std::istream>();
+		  
+		return result;
+    }
+    
+private:
+    std::string get_path_to_file(const std::string& file_path, const std::string& root_path)
+    {
+        return (root_path.empty() ? root_ : root_path) + file_path;
+    }
+};
+
+inline TemplatesProviderPtr TemplatesProvider::get_default_provider()
+{
+    static FilesystemTemplatesProvider default_prov;
+    
+    return TemplatesProviderPtr(&default_prov, [](TemplatesProvider*) {});
+}
 
 class Parser {
 public:
 	ElementNotation element_notation = ElementNotation::Pointer;
+	TemplatesProviderPtr templates_provider_;
 
 	/*!
 	@brief create a corresponding regex for a function name with a number of arguments seperated by ,
@@ -706,7 +751,7 @@ public:
 
 	std::map<Parsed::CallbackSignature, Regex, std::greater<Parsed::CallbackSignature>> regex_map_callbacks;
 
-	Parser() { }
+	Parser(TemplatesProviderPtr provider = TemplatesProvider::get_default_provider()) : templates_provider_(provider) { }
 
 	Parsed::ElementExpression parse_expression(const std::string& input) {
 		MatchType<Parsed::CallbackSignature> match_callback = match(input, regex_map_callbacks);
@@ -907,17 +952,15 @@ public:
 		return Template(*parsed);
 	}
 
-	Template parse_template(const std::string& filename) {
-		std::string input = load_file(filename);
+	Template parse_template(const std::string& filename, const std::string& base_path = std::string()) {
+		std::string input = load_file(filename, base_path);
 		std::string path = filename.substr(0, filename.find_last_of("/\\") + 1);
 		auto parsed = parse_tree(std::make_shared<Parsed::Element>(Parsed::Element(Parsed::Type::Main, input)), path);
 		return Template(*parsed);
 	}
 
-	std::string load_file(const std::string& filename) {
-		std::ifstream file(filename);
-		std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-		return text;
+	std::string load_file(const std::string& filename, const std::string& base_path) {
+	    return templates_provider_->read_file(filename, base_path);
 	}
 };
 
@@ -926,7 +969,7 @@ public:
 @brief Environment class
 */
 class Environment {
-	const std::string input_path;
+	TemplatesProviderPtr templates_provider;
 	const std::string output_path;
 
 	Parser parser = Parser();
@@ -934,8 +977,8 @@ class Environment {
 
 public:
 	Environment(): Environment("./") { }
-	explicit Environment(const std::string& global_path): input_path(global_path), output_path(global_path), parser() { }
-	explicit Environment(const std::string& input_path, const std::string& output_path): input_path(input_path), output_path(output_path), parser() { }
+	explicit Environment(const std::string& global_path): templates_provider(new FilesystemTemplatesProvider(global_path)), output_path(global_path), parser(templates_provider) { }
+	explicit Environment(const std::string& input_path, const std::string& output_path): templates_provider(new FilesystemTemplatesProvider(input_path)), output_path(output_path), parser(templates_provider) { }
 
 	void set_statement(const std::string& open, const std::string& close) {
 		parser.regex_map_delimiters[Parsed::Delimiter::Statement] = Regex{open + "\\s*(.+?)\\s*" + close};
@@ -962,7 +1005,7 @@ public:
 	}
 
 	Template parse_template(const std::string& filename) {
-		return parser.parse_template(input_path + filename);
+		return parser.parse_template(filename, std::string());
 	}
 
 	std::string render(const std::string& input, const json& data) {
@@ -1006,13 +1049,16 @@ public:
 	}
 
 	std::string load_global_file(const std::string& filename) {
-		return parser.load_file(input_path + filename);
+		return templates_provider->read_file(filename, std::string());
 	}
 
 	json load_json(const std::string& filename) {
-		std::ifstream file(input_path + filename);
+	    auto stream_ptr = templates_provider->get_file_stream(filename, std::string());
 		json j;
-		file >> j;
+		if (!stream_ptr) 
+		  return j;
+	    
+		(*stream_ptr) >> j;
 		return j;
 	}
 
