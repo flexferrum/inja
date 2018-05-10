@@ -44,6 +44,7 @@ SOFTWARE.
 #include <iostream>
 #include <locale>
 #include <regex>
+#include <unordered_map>
 #include <vector>
 #include <algorithm>
 #include <type_traits>
@@ -641,11 +642,50 @@ public:
     }
     
 private:
-    std::string get_path_to_file(const std::string& file_path, const std::string& root_path)
-    {
+    std::string get_path_to_file(const std::string& file_path, const std::string& root_path) {
         return (root_path.empty() ? root_ : root_path) + file_path;
     }
 };
+
+class InMemoryTemplatesProvider : public TemplatesProvider
+{
+    using FilesMapType = std::unordered_map<std::string, std::string>;
+    FilesMapType files_;
+public:
+    InMemoryTemplatesProvider() {}
+    InMemoryTemplatesProvider(std::initializer_list<FilesMapType::value_type> files) : files_(std::move(files)) {}
+    
+    std::string read_file(const std::string& file_path, const std::string& root_path) override {
+        auto name = root_path + file_path;
+        auto p = files_.find(name);
+        if (p == files_.end())
+            return std::string();
+            
+        return p->second;
+    }
+   
+    std::shared_ptr<std::istream> get_file_stream(const std::string& file_path, const std::string& root_path) override {
+        auto name = root_path + file_path;
+        auto p = files_.find(name);
+        if (p == files_.end())
+		    return std::shared_ptr<std::istream>();
+
+        std::shared_ptr<std::istream> result(new std::istringstream(p->second), [](std::istream* is) {delete static_cast<std::istringstream*>(is);});
+
+		return result;
+    }
+    
+    void add_file(const std::string& file_name, std::string content)
+    {
+        files_[file_name] = std::move(content);
+    }
+    
+    void remove_file(const std::string& file_name)
+    {
+        files_.erase(file_name);
+    }
+};
+
 
 inline TemplatesProviderPtr TemplatesProvider::get_default_provider()
 {
@@ -977,9 +1017,17 @@ class Environment {
 
 public:
 	Environment(): Environment("./") { }
-	explicit Environment(const std::string& global_path): templates_provider(new FilesystemTemplatesProvider(global_path)), output_path(global_path), parser(templates_provider) { }
-	explicit Environment(const std::string& input_path, const std::string& output_path): templates_provider(new FilesystemTemplatesProvider(input_path)), output_path(output_path), parser(templates_provider) { }
-
+	explicit Environment(const std::string& input_path, const std::string& output_path = std::string()): 
+	   templates_provider(new FilesystemTemplatesProvider(input_path)),
+	   output_path(output_path.empty() ? input_path : output_path),
+	   parser(templates_provider) 
+    { }
+	explicit Environment(TemplatesProviderPtr templates_prov, const std::string& output_path = "./"):
+	   templates_provider(templates_prov),
+	   output_path(output_path),
+	   parser(templates_prov) 
+    { }
+    
 	void set_statement(const std::string& open, const std::string& close) {
 		parser.regex_map_delimiters[Parsed::Delimiter::Statement] = Regex{open + "\\s*(.+?)\\s*" + close};
 	}

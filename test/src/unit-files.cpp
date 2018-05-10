@@ -24,6 +24,33 @@ TEST_CASE("loading") {
 	}
 }
 
+inja::TemplatesProviderPtr prepare_inmemory_files() {
+    auto files = std::make_shared<inja::InMemoryTemplatesProvider>();
+    
+    files->add_file("simple.txt", R"(Hello {{ name }}.)");
+    files->add_file("include.txt", R"(Answer: {% include "simple.txt" %})");
+    
+    return files;
+}
+
+TEST_CASE("loading-inmemory") {
+	inja::Environment env = inja::Environment(prepare_inmemory_files());
+	json data;
+	data["name"] = "Jeff";
+
+	SECTION("Files should be loaded") {
+		CHECK( env.load_global_file("simple.txt") == "Hello {{ name }}." );
+	}
+
+	SECTION("Files should be rendered") {
+		CHECK( env.render_file("simple.txt", data) == "Hello Jeff." );
+	}
+
+	SECTION("File includes should be rendered") {
+		CHECK( env.render_file("include.txt", data) == "Answer: Hello Jeff." );
+	}
+}
+
 TEST_CASE("complete-files") {
 	inja::Environment env = inja::Environment("../test/data/");
 
